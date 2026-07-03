@@ -9,6 +9,31 @@ comments'. Feel free to ask any questions you may have.
 I have a sub-project that automates the data preparation task for Kindle dictionaries. Here you can find
 it: [Kindle Custom Dictionary Scripts](https://github.com/hossein1376/Kindle-Custom-Dictionary-Scripts).
 
+## Automated release pipeline (GitHub Actions)
+
+This repository includes a workflow at `.github/workflows/release-dictionary.yml` that automates the build process:
+
+1. Uses `.src/Data Source.txt` as input source.
+2. Downloads `content.py` and `opf.py` from `Kindle-Custom-Dictionary-Scripts`.
+3. Generates `content*.html` and the `.opf` file in the same build directory.
+4. Tries to generate `.mobi` with `kindlegen` in CI (best effort).
+5. Uploads build artifacts.
+6. Creates a GitHub Release on tag pushes (`v*`).
+
+### How to use it
+
+1. Push changes to your source data.
+2. Create and push a version tag, for example:
+
+```bash
+git tag v2.5
+git push origin v2.5
+```
+
+3. Download release assets from GitHub Releases.
+
+If CI cannot generate `.mobi`, download the generated `.opf` + `content*.html` artifacts and open the `.opf` file in Kindle Previewer locally, then export `.mobi`.
+
 # دیکشنری انگلیسی به فارسی برای کتاب خوان های آمازون کیندل
 
 **۱۵۰ هزار کلمه و اصطلاح**
