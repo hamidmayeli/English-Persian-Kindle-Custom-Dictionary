@@ -1,0 +1,189 @@
+name: Build and Release Kindle Dictionary
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    env:
+      SOURCE_FILE: Data Source.txt
+      DICTIONARY_NAME: English-Persian Dictionary
+      AUTHOR_NAME: hossein1376
+      INPUT_LANGUAGE: en-us
+      OUTPUT_LANGUAGE: fa-ir
+      CONTENT_SCRIPT_URL: https://raw.githubusercontent.com/hossein1376/Kindle-Custom-Dictionary-Scripts/main/content.py
+      OPF_SCRIPT_URL: https://raw.githubusercontent.com/hossein1376/Kindle-Custom-Dictionary-Scripts/main/opf.py
+
+    outputs:
+      opf_file: ${{ steps.meta.outputs.opf_file }}
+      mobi_exists: ${{ steps.files.outputs.mobi_exists }}
+      mobi_file: ${{ steps.files.outputs.mobi_file }}
+      dictionary_name: ${{ steps.meta.outputs.dictionary_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set build metadata
+        id: meta
+        shell: bash
+        run: |
+          OPF_FILE="${DICTIONARY_NAME}.opf"
+
+          {
+            echo "dictionary_name=${DICTIONARY_NAME}"
+            echo "author_name=${AUTHOR_NAME}"
+            echo "input_language=${INPUT_LANGUAGE}"
+            echo "output_language=${OUTPUT_LANGUAGE}"
+            echo "opf_file=${OPF_FILE}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install kindlegen runtime dependencies
+        shell: bash
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y \
+            libc6:i386 \
+            libstdc++6:i386 \
+            zlib1g:i386 \
+            libgcc-s1:i386 \
+            libncurses5:i386 \
+            libtinfo5:i386
+
+      - name: Prepare build workspace
+        shell: bash
+        run: |
+          mkdir -p build
+          cp ".src/${SOURCE_FILE}" "build/${SOURCE_FILE}"
+
+      - name: Download generation scripts
+        working-directory: build
+        shell: bash
+        run: |
+          curl -fsSL "$CONTENT_SCRIPT_URL" -o content.py
+          curl -fsSL "$OPF_SCRIPT_URL" -o opf.py
+
+      - name: Generate HTML files from source
+        id: content
+        working-directory: build
+        shell: bash
+        run: |
+          printf '%s\n' "$SOURCE_FILE" | python content.py
+          COUNT=$(find . -maxdepth 1 -name 'content*.html' | wc -l | tr -d ' ')
+          echo "content_count=${COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate OPF file
+        working-directory: build
+        shell: bash
+        run: |
+          PAGE_COUNT=$(find . -maxdepth 1 -name 'content*.html' | wc -l | tr -d ' ')
+          {
+            printf '%s\n' "$PAGE_COUNT"
+            printf '%s\n' '${{ steps.meta.outputs.dictionary_name }}'
+            printf '%s\n' '${{ steps.meta.outputs.author_name }}'
+            printf '%s\n' '${{ steps.meta.outputs.input_language }}'
+            printf '%s\n' '${{ steps.meta.outputs.output_language }}'
+          } | python opf.py
+
+      - name: Try to build MOBI with kindlegen
+        working-directory: build
+        shell: bash
+        run: |
+          set -e
+          KINDLEGEN_URL='https://kindlegen.s3.amazonaws.com/kindlegen_linux_2.6_i386_v2_9.tar.gz'
+          curl -fsSL "$KINDLEGEN_URL" -o kindlegen.tar.gz
+          tar -xzf kindlegen.tar.gz
+          chmod +x ./kindlegen
+          ./kindlegen '${{ steps.meta.outputs.opf_file }}' -verbose > kindlegen.log 2>&1
+          tail -n 200 kindlegen.log || true
+          echo "kindlegen completed"
+
+      - name: Collect generated files
+        id: files
+        working-directory: build
+        shell: bash
+        run: |
+          shopt -s nullglob
+          ls -la
+
+          if [[ ! -f '${{ steps.meta.outputs.opf_file }}' ]]; then
+            echo "Expected OPF file not found: ${{ steps.meta.outputs.opf_file }}"
+            exit 1
+          fi
+
+          MOBI_FILE=""
+          for f in *.mobi; do
+            MOBI_FILE="$f"
+            break
+          done
+
+          if [[ -n "$MOBI_FILE" ]]; then
+            RELEASE_MOBI="English-Persian.Dictionary.${GITHUB_REF_NAME}.mobi"
+            mv "$MOBI_FILE" "$RELEASE_MOBI"
+            echo "mobi_exists=true" >> "$GITHUB_OUTPUT"
+            echo "mobi_file=$RELEASE_MOBI" >> "$GITHUB_OUTPUT"
+          else
+            echo "MOBI generation failed. Check build/kindlegen.log"
+            echo "Generated files in build directory:"
+            ls -la
+            tail -n 400 kindlegen.log || true
+            exit 1
+          fi
+
+      - name: Upload build artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-dictionary-build
+          path: |
+            build/content*.html
+            build/${{ steps.meta.outputs.opf_file }}
+            build/*.mobi
+            build/kindlegen.log
+          if-no-files-found: warn
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: kindle-dictionary-build
+          path: dist
+
+      - name: Compose release notes
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo "## Build Output"
+            echo "- Generated HTML files and OPF using Kindle-Custom-Dictionary-Scripts"
+            echo "- MOBI generated successfully via kindlegen"
+          } > release-notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.opf
+            dist/content*.html
+            dist/*.mobi
+            dist/kindlegen.log
+          body_path: release-notes.md
